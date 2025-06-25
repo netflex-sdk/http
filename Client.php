@@ -2,6 +2,10 @@
 
 namespace Netflex\Http;
 
+use GuzzleHttp\BodySummarizer;
+use GuzzleHttp\HandlerStack;
+use GuzzleHttp\Middleware;
+use GuzzleHttp\Utils;
 use Netflex\Http\Contracts\HttpClient;
 use Psr\Http\Message\ResponseInterface;
 
@@ -11,6 +15,7 @@ use GuzzleHttp\Client as GuzzleClient;
 use GuzzleHttp\Promise\PromiseInterface;
 use GuzzleHttp\Promise\Promise;
 use GuzzleHttp\Exception\GuzzleException as Exception;
+use Psr\Http\Message\UriInterface;
 
 class Client implements HttpClient
 {
@@ -24,7 +29,22 @@ class Client implements HttpClient
    */
   public function __construct(array $options = [])
   {
-    $this->client = new GuzzleClient($options);
+    // Increases the guzzle error message limit before truncation.
+    // Ref: https://github.com/guzzle/guzzle/issues/2185#issuecomment-800293420,
+    // https://stackoverflow.com/a/78401816
+    $stack = new HandlerStack(Utils::chooseHandler());
+    $stack->push(
+      Middleware::httpErrors(new BodySummarizer(1000000)),
+      'http_errors',
+    );
+    $stack->push(Middleware::redirect(), 'allow_redirects');
+    $stack->push(Middleware::cookies(), 'cookies');
+    $stack->push(Middleware::prepareBody(), 'prepare_body');
+
+    $this->client = new GuzzleClient(array_merge(
+      ['handler' => $stack],
+      $options,
+    ));
   }
 
   protected function buildPayload($payload)
@@ -205,5 +225,42 @@ class Client implements HttpClient
   {
     return $this->deleteRawAsync($url, $payload)
       ->then(fn ($response) => $this->parseResponse($response, $assoc));
+  }
+
+  /**
+   * @param string $method
+   * @param UriInterface|string $uri
+   * @param array $options
+   * @param bool $assoc
+   * @return mixed
+   * @throws Exception
+   */
+  public function request(
+    string $method,
+    UriInterface|string $uri = '',
+    array $options = [],
+    bool $assoc = false,
+  ): mixed {
+    return $this->parseResponse(
+      $this->client->request($method, $uri, $options),
+      $assoc,
+    );
+  }
+
+  /**
+   * @param string $method
+   * @param UriInterface|string $uri
+   * @param array $options
+   * @param bool $assoc
+   * @return PromiseInterface
+   */
+  public function requestAsync(
+    string $method,
+    UriInterface|string $uri = '',
+    array $options = [],
+    bool $assoc = false,
+  ): PromiseInterface {
+    return $this->client->requestAsync($method, $uri, $options)
+      ->then(fn ($response) => ($this->parseResponse($response, $assoc)));
   }
 }
